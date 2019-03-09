@@ -10,7 +10,7 @@
 
 #include "SPI.h"
 #include "Adafruit_GFX.h"
-#include "Wire.h"      // this is needed even tho we aren't using it
+#include "Wire.h"      // this is needed even though we aren't using it
 #include "Adafruit_ILI9341.h"
 #include "Adafruit_STMPE610.h"
 #include "OneWire.h"
@@ -38,7 +38,7 @@
 #define HIST_WATER 1             //The number of water readings to take between storing one
 #define HIST_TEMP 8              //The number of temperature readings to take between storing one
 #define HIST_POWER 8             //The number of voltage readings to take between storing one
-#define HIST_CURRENT 1
+#define HIST_CURRENT 1           //The number of current readings to take between storing one
 
 #define TFT_DC 9            //Data/Command pin for the TFT
 #define TFT_CS 10           //Chip select pin for the TFT
@@ -460,9 +460,9 @@ class TempSensor : public Sensor
       word val;
        byte i;
         byte data[12];
-        int16_t raw;
+        int raw;
         float celsius;
-
+        
         //If no sensor is attached, default to absolute zero (-273.15 degrees C)
         if (validSensor==false)
         {
@@ -487,14 +487,22 @@ class TempSensor : public Sensor
           data[i] = dataBus->read();
         }
 
-        
-        //Assume 12 bit resolution
-        //Shift data 3 bits up the register to ensure sign  bit is used - raw data is scaled to 2^-7
-        raw = (((int16_t) data[TEMP_MSB]) << 11) | (((int16_t) data[TEMP_LSB]) << 3);
+        //Combine to data bits (data is provided as 16-bit 2's complement
+        raw = (data[TEMP_MSB]<<8)+data[TEMP_LSB];           //take the two bytes from the response relating to temperature
 
-        //Convert raw data to celsius - divide raw data by 2^7
-        celsius = (float)raw / 128.0;
         
+        //12 bit resolution
+        if (type_s == 0)
+        {
+          //LSB is 2^-4, so divide raw result by 16
+          celsius = (float)raw / 16.0;
+        }
+        //8 bit resolution
+        else if (type_s == 1)
+        {
+          //LSB is 2^-1, so divide raw result by 2
+          celsius = (float)raw / 2.0;
+        }  
         
         //Convert calculated temperature to a word variable to save memory (multiply by 100 to keep value to 2dp)
         val = (word) round(celsius * 100);
@@ -907,15 +915,27 @@ class GraphPage : public DisplayPage
       int incr, order;
 
       if (horizontal)
-      {
+      {     
+        
         if (timeMultiplier == NULL)
         {
-          numIncr = intPixelRange / (CHAR_X * 1.00 * ceil(log10(intAxesMax)));
+          //Get the order of the maximum value (to work out the size of the labels)
+          order = ceil(log10(intAxesMax));
+          //Get the number of labels that could be accommodated
+          numIncr = intPixelRange / (CHAR_X * 1.00 * order);
         }
         else
         {
-          numIncr = intPixelRange / (CHAR_X * 1.00 * (ceil(log10((intAxesMax * timeMultiplier)/3600.00))+3.00));
+          //Get the order of the maximum value in hours (to work out the size of the labels)
+          order = ceil(log10((intAxesMax * timeMultiplier)/3600.00));
+
+          //Constrait order to be at least 1 (maximum values of less than 1 give a negative log10 which crashes the next calc)
+          order = max(1.0, order);
+
+          //Get the number of labels that could be accommodated (3 is added to account for the ':00' after an integer hour)
+          numIncr = intPixelRange / (CHAR_X * 1.00 * (order+3.00));
         }
+        
       }
       else
       {
@@ -923,10 +943,12 @@ class GraphPage : public DisplayPage
       }
 
       incr = ceil((intAxesMax - intAxesMin) / numIncr);
-      order = pow(60, floor(log10(incr)/log10(60)));
+      order = pow(10,floor(log10(incr)));
 
-      incr = ceil(incr / (order * 1.0)) * order;
-
+      if ((incr / order > 1) && (incr / order <= 2))
+      {
+        incr = 2 * order;
+      }
       if ((incr / order > 2) && (incr / order <= 5))
       {
         incr = 5 * order;
@@ -935,12 +957,16 @@ class GraphPage : public DisplayPage
       {
         incr = 10 * order;
       }
+      else
+      {
+        incr=order;
+      }
 
       return incr;
     }
 
     int calcIncrement(int intAxesMin, int intAxesMax, int intPixelRange, bool horizontal)
-    {
+    {    
       return calcIncrement(intAxesMin, intAxesMax, intPixelRange, horizontal, NULL);
     }
 
@@ -1015,20 +1041,31 @@ class GraphPage : public DisplayPage
       //Draw X axis labels
       incr = calcIncrement(minX, maxX, tft.width() - 20 - yAxis, true, timeMultiplier);
 
-
-      for (i = minX; i <= maxX; i = i + incr)
+      if (timeMultiplier == NULL)
       {
-        tft.setCursor(map(i, minX, maxX, yAxis, (tft.width() - 20)), xAxis + 2);
-        intHours = (int) floor(((maxX - i) * (timeMultiplier)) / 3600);
-        intMinutes = (int) (((maxX - i) * (timeMultiplier)) % 3600) * (60.0/3600.0);
-        tft.print(intHours);
-        tft.print(":");
-        if (intMinutes < 10)
+        for (i = minX; i <= maxX; i = i + incr)
         {
-          tft.print("0");
-        }
-        tft.print(intMinutes);
+          tft.setCursor(map(i, minX, maxX, yAxis, (tft.width() - 20)), xAxis + 2);
+          tft.print(i);
+        }          
       }
+      else
+      {
+        for (i = minX; i <= maxX; i = i + incr)
+        {
+          tft.setCursor(map(i, minX, maxX, yAxis, (tft.width() - 20)), xAxis + 2);
+          intHours = (int) floor(((maxX - i) * (timeMultiplier)) / 3600);
+          intMinutes = (int) (((maxX - i) * (timeMultiplier)) % 3600) * (60.0/3600.0);
+          tft.print(intHours);
+          tft.print(":");
+          if (intMinutes < 10)
+          {
+            tft.print("0");
+          }
+          tft.print(intMinutes);
+        }
+      }
+      
 
       //Draw titles
       tft.setCursor(((tft.width() - yAxis - 10) / 2) + yAxis - (strXTitle.length() / 2) , xAxis + 4 + CHAR_Y);
@@ -1377,6 +1414,7 @@ Ultrasound waterTank(PIN_US_POWER, PIN_US_TRIGGER, PIN_US_ECHO, 2, DELAY_WATER, 
 
 //---------Initialise display pages
 GraphPage powerGraph("Time (hours ago)", "Voltage", &battVolt, NULL, NULL, (DELAY_POWER * HIST_POWER)/1000L);
+//GraphPage powerGraph("Time (hours ago)", "Voltage", &battVolt, NULL, NULL, NULL);
 GraphPage tempGraph("Time (hours ago)", "Temperature (C)", &intTemp, &extTemp, NULL, (DELAY_TEMP * HIST_TEMP)/1000L);
 MainPage frontPage(&battVolt, &circ1Curr, &circ2Curr, &intTemp, &extTemp, &waterTank);
 WaterPage pgWater(&waterTank);
